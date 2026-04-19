@@ -19,86 +19,138 @@ This project converts hand gestures into predefined messages using flex sensors 
 
 -->Code
 
-#define BLYNK_TEMPLATE_ID "YOUR_TEMPLATE_ID"
-#define BLYNK_DEVICE_NAME "FlexGlove"
-#define BLYNK_AUTH_TOKEN "YOUR_AUTH_TOKEN"
-
-#define BLYNK_PRINT Serial
+#define BLYNK_TEMPLATE_ID "TMPL30ZJUwCld"
+#define BLYNK_TEMPLATE_NAME "ASSISTIVE GLOVE"
+#define BLYNK_AUTH_TOKEN "K2_ROh54CDwUOIKgo60s-IBgofnxjCpa"
 
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <BlynkSimpleEsp32.h>
+#include <DHT.h>
+#include <PulseSensorPlayground.h>
 
-char ssid[] = "Your_WiFi_SSID";
-char pass[] = "Your_WiFi_Password";
+// --- WiFi Credentials ---
+char ssid[] = "hi";
+char pass[] = "12345678";
 
-// 5 flex sensors (assign pins based on your wiring)
-const int flexPin1 = 34; // Thumb
-const int flexPin2 = 35; // Index
-const int flexPin3 = 32; // Middle
-const int flexPin4 = 33; // Ring
-const int flexPin5 = 25; // Little
+// --- Pin Definitions ---
+#define DHTPIN 13
+#define DHTTYPE DHT11
+#define PULSE_PIN 26
+#define BUZZER_PIN 14
+#define THUMB_PIN 34
+#define INDEX_PIN 35
+#define MIDDLE_PIN 32
+#define RING_PIN 33
+#define PINKY_PIN 25
 
-BlynkTimer timer;
+// --- Blynk Virtual Pins ---
+#define VPIN_TEMP V0
+#define VPIN_HUMID V1
+#define VPIN_PULSE V2
+#define VPIN_BUZZER_SWITCH V3
+#define VPIN_THUMB V4
+#define VPIN_INDEX V5
+#define VPIN_MIDDLE V6
+#define VPIN_RING V7
+#define VPIN_PINKY V8
+#define VPIN_MESSAGE V9
 
-// Threshold (adjust after calibration)
-int threshold = 100;
+// --- Sensor Objects ---
+DHT dht(DHTPIN, DHTTYPE);
+PulseSensorPlayground pulseSensor;
 
-void sendSensorData() {
-  int f1 = map(analogRead(flexPin1), 1500, 3000, 0, 180);
-  int f2 = map(analogRead(flexPin2), 1500, 3000, 0, 180);
-  int f3 = map(analogRead(flexPin3), 1500, 3000, 0, 180);
-  int f4 = map(analogRead(flexPin4), 1500, 3000, 0, 180);
-  int f5 = map(analogRead(flexPin5), 1500, 3000, 0, 180);
-
-  // Constrain values
-  f1 = constrain(f1, 0, 180);
-  f2 = constrain(f2, 0, 180);
-  f3 = constrain(f3, 0, 180);
-  f4 = constrain(f4, 0, 180);
-  f5 = constrain(f5, 0, 180);
-
-  // Debug
-  Serial.printf("T:%d I:%d M:%d R:%d L:%d\n", f1, f2, f3, f4, f5);
-
-  String message = "";
-
-  // 👉 Single finger gestures (based on your image idea)
-  if (f1 > threshold && f2 < threshold && f3 < threshold && f4 < threshold && f5 < threshold) {
-    message = "Need water";
-  }
-  else if (f2 > threshold && f1 < threshold && f3 < threshold && f4 < threshold && f5 < threshold) {
-    message = "Feeling hungry";
-  }
-  else if (f3 > threshold && f1 < threshold && f2 < threshold && f4 < threshold && f5 < threshold) {
-    message = "Yes";
-  }
-  else if (f4 > threshold && f1 < threshold && f2 < threshold && f3 < threshold && f5 < threshold) {
-    message = "No";
-  }
-  else if (f5 > threshold && f1 < threshold && f2 < threshold && f3 < threshold && f4 < threshold) {
-    message = "Need washroom";
-  }
-
-  // Print message
-  if (message != "") {
-    Serial.println("Message: " + message);
-    Blynk.virtualWrite(V0, message);
-  }
-}
+// --- Variables ---
+int buzzerState = 0; // Controlled from Blynk
+String lastMessage = "";
+int highPulseLimit = 120; // bpm threshold
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("5-Finger Assistive Glove Started");
-
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+  dht.begin();
 
-  timer.setInterval(1000L, sendSensorData);
+  // Initialize Pulse Sensor
+  pulseSensor.analogInput(PULSE_PIN);
+  pulseSensor.begin();
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW); // buzzer off by default
+}
+
+BLYNK_WRITE(VPIN_BUZZER_SWITCH) {
+  buzzerState = param.asInt(); // 1 = ON, 0 = OFF
 }
 
 void loop() {
   Blynk.run();
-  timer.run();
+
+  // --- Flex Sensor Reading ---
+  checkFlexGesture();
+
+  // --- Temperature & Humidity ---
+  float h = dht.readHumidity();
+  float t = dht.readTemperature(true); // Fahrenheit
+
+  if (!isnan(t) && !isnan(h)) {
+    Blynk.virtualWrite(VPIN_TEMP, t);
+    Blynk.virtualWrite(VPIN_HUMID, h);
+  }
+
+  // --- Pulse Reading ---
+  int BPM = pulseSensor.getBeatsPerMinute();
+  if (pulseSensor.sawStartOfBeat()) {
+    Serial.print("❤️ BPM: ");
+    Serial.println(BPM);
+    Blynk.virtualWrite(VPIN_PULSE, BPM);
+
+    // Warning if pulse > normal
+    if (BPM > highPulseLimit) {
+      Blynk.virtualWrite(VPIN_MESSAGE, "⚠️ High Pulse Detected! Please check the patient.");
+    }
+  }
+
+  // --- Buzzer Control (Continuous ON/OFF) ---
+  if (buzzerState == 1) {
+    digitalWrite(BUZZER_PIN, LOW);  // Switch ON → buzzer ON continuously
+  } else {
+    digitalWrite(BUZZER_PIN, HIGH);   // Switch OFF → buzzer OFF
+  }
+
+  delay(500);
+}
+
+void checkFlexGesture() {
+  int thumbVal = analogRead(THUMB_PIN);
+  int indexVal = analogRead(INDEX_PIN);
+  int middleVal = analogRead(MIDDLE_PIN);
+  int ringVal = analogRead(RING_PIN);
+  int pinkyVal = analogRead(PINKY_PIN);
+
+  String message = "";
+ // --- Combination Gestures ---
+  if (indexVal > 1500 && middleVal > 1500) {
+    message = "🤚 let them go out I want to take rest\n";
+  } 
+  else if (thumbVal > 1500 && indexVal > 1500) {
+    message = "👍 I'm OK\n";
+  } 
+  else if (thumbVal > 1500 && middleVal > 1500) {
+    message = "🤕 I need to take my medicine\n ";
+  }
+  // --- Single Finger Gestures ---
+  else if (thumbVal > 1500) message = "✋ I’m feeling pain, please come\n";
+  else if (indexVal > 1500) message = "👉 I need water, please.\n";
+  else if (middleVal > 1500) message = "🖐 I am hungry / need food..\n";
+  else if (ringVal > 1500) message = "👌 Please call the doctor!.\n";
+  else if (pinkyVal > 1500) message = "🤚 I want to use washroom\n";
+  else message = "";
+
+  if (message != "" && message != lastMessage) {
+    lastMessage = message;
+    Serial.println(message);
+    Blynk.virtualWrite(VPIN_MESSAGE, message);
+  }
 }
 -->Project Images
 
